@@ -56,18 +56,14 @@ func main() {
 		trustDomain = global.GetIdentityContext().GetTrustDomain()
 	}
 
-	server, err := destination.NewServer(
+	server := destination.NewServer(
 		*addr,
-		*k8sDNSZone,
 		*controllerNamespace,
 		trustDomain,
 		*enableH2Upgrade,
 		k8sAPI,
 		done,
 	)
-	if err != nil {
-		log.Fatal(err)
-	}
 
 	k8sAPI.Sync() // blocks until caches are synced
 
