@@ -1,19 +1,26 @@
-package destination
+package watcher
 
 import (
-	"errors"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"regexp"
-	"strconv"
-	"testing"
 )
 
 var k8sSvcNameRE = regexp.MustCompile("^(?i)([^.]+)\\.([^.]+)\\.svc\\.cluster\\.local\\.?(?::(\\d+))?$")
 
-type serviceID struct {
-	namespace string
-	name      string
-}
+type (
+	ID struct {
+		Namespace string
+		Name      string
+	}
+	ServiceID = ID
+	PodID     = ID
+	ProfileID = ID
 
+	Port      = uint32
+	namedPort = intstr.IntOrString
+)
+
+/*
 func parseK8sServiceFromAuthority(name authority) (serviceID, port, error) {
 	parts := k8sSvcNameRE.FindStringSubmatch(name)
 
@@ -73,3 +80,4 @@ func testParseK8sServiceFromAuthority(t *testing.T) {
 		t.Error("should not have parsed linkerd.io")
 	}
 }
+*/
