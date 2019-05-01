@@ -1,4 +1,4 @@
-package destination
+package watcher
 
 import (
 	"reflect"

@@ -36,7 +36,7 @@ type (
 	// that service:port.
 	EndpointsWatcher struct {
 		publishers   map[ServiceID]*servicePublisher
-		publishersMu sync.RWMutex
+		publishersMu sync.RWMutex // This mutex protects modifcation of the map itself.
 		k8sAPI       *k8s.API
 
 		log *logging.Entry
@@ -51,8 +51,10 @@ type (
 		log    *logging.Entry
 		k8sAPI *k8s.API
 
-		ports   map[Port]*portPublisher
-		portsMu sync.RWMutex
+		ports map[Port]*portPublisher
+		// All access to the servicePublisher and its portPublishers is explicitly synchronized by
+		// this mutex.
+		mutex sync.Mutex
 	}
 
 	portPublisher struct {
@@ -111,70 +113,70 @@ func NewEndpointsWatcher(k8sAPI *k8s.API, log *logging.Entry) *EndpointsWatcher 
 // Subscribe to a service and service port.
 // The provided listener will be updated each time the address set for the
 // given service port is changed.
-func (e *EndpointsWatcher) Subscribe(service ServiceID, port Port, listener EndpointUpdateListener) {
-	e.log.Infof("Establishing watch on endpoint %s:%d", service, port)
+func (ew *EndpointsWatcher) Subscribe(id ServiceID, port Port, listener EndpointUpdateListener) {
+	ew.log.Infof("Establishing watch on endpoint %s:%d", id, port)
 
-	e.publishersMu.Lock()
+	ew.publishersMu.Lock()
 	// If the service doesn't yet exist, create a stub for it so the listener can
 	// be registered.
-	sp, ok := e.publishers[service]
+	sp, ok := ew.publishers[id]
 	if !ok {
-		e.publishers[service] = e.newServicePublisher(service)
+		sp = ew.newServicePublisher(id)
+		ew.publishers[id] = sp
 	}
-	e.publishersMu.Unlock()
+	ew.publishersMu.Unlock()
 
 	sp.subscribe(port, listener)
 }
 
-func (e *EndpointsWatcher) Unsubscribe(service ServiceID, port Port, listener EndpointUpdateListener) {
-	e.log.Infof("Stopping watch on endpoint %s:%d", service, port)
+func (ew *EndpointsWatcher) Unsubscribe(id ServiceID, port Port, listener EndpointUpdateListener) {
+	ew.log.Infof("Stopping watch on endpoint %s:%d", id, port)
 
-	e.publishersMu.Lock()
-	sp, ok := e.publishers[service]
+	ew.publishersMu.RLock()
+	sp, ok := ew.publishers[id]
+	ew.publishersMu.RUnlock()
 	if !ok {
 		return
 	}
-	e.publishersMu.Unlock()
 	sp.unsubscribe(port, listener)
 
 	return
 }
 
-func (e *EndpointsWatcher) addService(obj interface{}) {
+func (ew *EndpointsWatcher) addService(obj interface{}) {
 	service := obj.(*corev1.Service)
 	id := ServiceID{
 		Namespace: service.Namespace,
 		Name:      service.Name,
 	}
 
-	e.publishersMu.Lock()
-	sp, ok := e.publishers[id]
+	ew.publishersMu.Lock()
+	sp, ok := ew.publishers[id]
 	if !ok {
-		sp = e.newServicePublisher(id)
-		e.publishers[id] = sp
+		sp = ew.newServicePublisher(id)
+		ew.publishers[id] = sp
 	}
-	e.publishersMu.Unlock()
+	ew.publishersMu.Unlock()
 
 	sp.updateService(service)
 }
 
-func (e *EndpointsWatcher) deleteService(obj interface{}) {
+func (ew *EndpointsWatcher) deleteService(obj interface{}) {
 	service := obj.(*corev1.Service)
 	id := ServiceID{
 		Namespace: service.Namespace,
 		Name:      service.Name,
 	}
 
-	e.publishersMu.Lock()
-	defer e.publishersMu.Unlock()
-
-	sp, ok := e.publishers[id]
+	ew.publishersMu.RLock()
+	sp, ok := ew.publishers[id]
+	ew.publishersMu.RUnlock()
 	if ok {
 		sp.deleteEndpoints()
 	}
 }
 
-func (e *EndpointsWatcher) addEndpoints(obj interface{}) {
+func (ew *EndpointsWatcher) addEndpoints(obj interface{}) {
 	endpoints := obj.(*corev1.Endpoints)
 	if endpoints.Namespace == kubeSystem {
 		return
@@ -184,19 +186,19 @@ func (e *EndpointsWatcher) addEndpoints(obj interface{}) {
 		Name:      endpoints.Name,
 	}
 
-	e.publishersMu.RLock()
-	sp, ok := e.publishers[id]
+	ew.publishersMu.Lock()
+	sp, ok := ew.publishers[id]
 	if !ok {
-		sp = e.newServicePublisher(id)
-		e.publishers[id] = sp
+		sp = ew.newServicePublisher(id)
+		ew.publishers[id] = sp
 
 	}
-	e.publishersMu.RUnlock()
+	ew.publishersMu.Unlock()
 
 	sp.updateEndpoints(endpoints)
 }
 
-func (e *EndpointsWatcher) deleteEndpoints(obj interface{}) {
+func (ew *EndpointsWatcher) deleteEndpoints(obj interface{}) {
 	endpoints := obj.(*corev1.Endpoints)
 	if endpoints.Namespace == kubeSystem {
 		return
@@ -206,23 +208,23 @@ func (e *EndpointsWatcher) deleteEndpoints(obj interface{}) {
 		Name:      endpoints.Name,
 	}
 
-	e.publishersMu.RLock()
-	sp, ok := e.publishers[id]
-	e.publishersMu.RUnlock()
+	ew.publishersMu.RLock()
+	sp, ok := ew.publishers[id]
+	ew.publishersMu.RUnlock()
 	if ok {
 		sp.deleteEndpoints()
 	}
 }
 
-func (e *EndpointsWatcher) newServicePublisher(service ServiceID) *servicePublisher {
+func (ew *EndpointsWatcher) newServicePublisher(service ServiceID) *servicePublisher {
 	return &servicePublisher{
 		id: service,
-		log: e.log.WithFields(logging.Fields{
+		log: ew.log.WithFields(logging.Fields{
 			"component": "service-publisher",
 			"ns":        service.Namespace,
 			"svc":       service.Name,
 		}),
-		k8sAPI: e.k8sAPI,
+		k8sAPI: ew.k8sAPI,
 		ports:  make(map[Port]*portPublisher),
 	}
 }
@@ -232,8 +234,9 @@ func (e *EndpointsWatcher) newServicePublisher(service ServiceID) *servicePublis
 ////////////////////////
 
 func (sp *servicePublisher) updateEndpoints(newEndpoints *corev1.Endpoints) {
-	sp.portsMu.Lock()
-	defer sp.portsMu.Unlock()
+	sp.mutex.Lock()
+	defer sp.mutex.Unlock()
+	sp.log.Debugf("Updating endpoints for %s", sp.id)
 
 	for _, port := range sp.ports {
 		port.updateEndpoints(newEndpoints)
@@ -241,10 +244,9 @@ func (sp *servicePublisher) updateEndpoints(newEndpoints *corev1.Endpoints) {
 }
 
 func (sp *servicePublisher) deleteEndpoints() {
+	sp.mutex.Lock()
+	defer sp.mutex.Unlock()
 	sp.log.Debugf("Deleting endpoints for %s", sp.id)
-
-	sp.portsMu.Lock()
-	defer sp.portsMu.Unlock()
 
 	for _, port := range sp.ports {
 		port.noEndpoints(false)
@@ -252,8 +254,9 @@ func (sp *servicePublisher) deleteEndpoints() {
 }
 
 func (sp *servicePublisher) updateService(newService *corev1.Service) {
-	sp.portsMu.Lock()
-	defer sp.portsMu.Unlock()
+	sp.mutex.Lock()
+	defer sp.mutex.Unlock()
+	sp.log.Debugf("Updating service for %s", sp.id)
 
 	for srcPort, port := range sp.ports {
 		newTargetPort := getTargetPort(newService, srcPort)
@@ -264,14 +267,13 @@ func (sp *servicePublisher) updateService(newService *corev1.Service) {
 }
 
 func (sp *servicePublisher) subscribe(srcPort Port, listener EndpointUpdateListener) {
-	sp.log.Debugf("Subscribing %s:%d", sp.id, srcPort)
-
-	sp.portsMu.Lock()
-	defer sp.portsMu.Unlock()
+	sp.mutex.Lock()
+	defer sp.mutex.Unlock()
 
 	port, ok := sp.ports[srcPort]
 	if !ok {
-		sp.ports[srcPort] = sp.newPortPublisher(srcPort)
+		port = sp.newPortPublisher(srcPort)
+		sp.ports[srcPort] = port
 	}
 	port.subscribe(listener)
 }
@@ -279,10 +281,8 @@ func (sp *servicePublisher) subscribe(srcPort Port, listener EndpointUpdateListe
 // unsubscribe returns true iff the listener was found and removed.
 // it also returns the number of listeners remaining after unsubscribing.
 func (sp *servicePublisher) unsubscribe(srcPort Port, listener EndpointUpdateListener) {
-	sp.log.Debugf("Unsubscribing %s:%d", sp.id, srcPort)
-
-	sp.portsMu.Lock()
-	defer sp.portsMu.Unlock()
+	sp.mutex.Lock()
+	defer sp.mutex.Unlock()
 
 	port, ok := sp.ports[srcPort]
 	if ok {
@@ -356,7 +356,7 @@ func (pp *portPublisher) endpointsToAddresses(endpoints *corev1.Endpoints) PodSe
 				if err != nil {
 					pp.log.Errorf("Unable to fetch pod %v: %s", id, err)
 				}
-				ownerName, ownerKind := pp.k8sAPI.GetOwnerKindAndName(pod)
+				ownerKind, ownerName := pp.k8sAPI.GetOwnerKindAndName(pod)
 				pods[id] = Address{
 					Ip:        endpoint.IP,
 					Port:      resolvedPort,
@@ -419,6 +419,7 @@ func (pp *portPublisher) unsubscribe(listener EndpointUpdateListener) {
 		if e == listener {
 			n := len(pp.listeners)
 			pp.listeners[i] = pp.listeners[n-1]
+			pp.listeners[n-1] = nil
 			pp.listeners = pp.listeners[:n-1]
 			return
 		}

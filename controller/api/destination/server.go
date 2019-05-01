@@ -54,7 +54,7 @@ func NewServer(
 		"component": "server",
 	})
 	endpoints := watcher.NewEndpointsWatcher(k8sAPI, log)
-	profiles := watcher.NewProfileWatcher(k8sAPI)
+	profiles := watcher.NewProfileWatcher(k8sAPI, log)
 
 	srv := server{
 		endpoints,
