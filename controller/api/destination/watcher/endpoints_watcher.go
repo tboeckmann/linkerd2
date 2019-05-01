@@ -390,7 +390,7 @@ func (pp *portPublisher) updatePort(targetPort namedPort) {
 	if err == nil {
 		pp.updateEndpoints(endpoints)
 	} else {
-		pp.noEndpoints(false)
+		pp.log.Errorf("Unable to get endpoints during port update: %s", err)
 	}
 }
 

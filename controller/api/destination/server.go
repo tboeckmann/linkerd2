@@ -13,6 +13,7 @@ import (
 	"github.com/linkerd/linkerd2/pkg/prometheus"
 	logging "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/peer"
 )
 
 type (
@@ -75,7 +76,11 @@ func NewServer(
 }
 
 func (s *server) Get(dest *pb.GetDestination, stream pb.Destination_GetServer) error {
-	s.log.Debugf("get %s", dest.GetPath())
+	client, _ := peer.FromContext(stream.Context())
+	log := s.log.WithFields(logging.Fields{
+		"remote": client.Addr,
+	})
+	log.Debugf("Get %s", dest.GetPath())
 
 	service, port, err := s.getServiceAndPort(dest)
 	if err != nil {
@@ -88,7 +93,7 @@ func (s *server) Get(dest *pb.GetDestination, stream pb.Destination_GetServer) e
 		s.enableH2Upgrade,
 		service,
 		stream,
-		s.log,
+		log,
 	)
 
 	s.endpoints.Subscribe(service, port, translator)
@@ -97,13 +102,19 @@ func (s *server) Get(dest *pb.GetDestination, stream pb.Destination_GetServer) e
 	select {
 	case <-s.shutdown:
 	case <-stream.Context().Done():
+		log.Debugf("Get %s cancelled", dest.GetPath())
 	}
 
 	return nil
 }
 
 func (s *server) GetProfile(dest *pb.GetDestination, stream pb.Destination_GetProfileServer) error {
-	s.log.Debugf("GetProfile(%+v)", dest)
+	client, _ := peer.FromContext(stream.Context())
+	log := s.log.WithFields(logging.Fields{
+		"remote": client.Addr,
+	})
+	log.Debugf("GetProfile(%+v)", dest)
+
 	host, _, err := s.getHostAndPort(dest)
 	if err != nil {
 		return err
@@ -113,7 +124,7 @@ func (s *server) GetProfile(dest *pb.GetDestination, stream pb.Destination_GetPr
 		return err
 	}
 
-	translator := newProfileTranslator(stream, s.log)
+	translator := newProfileTranslator(stream, log)
 
 	primary, secondary := newFallbackProfileListener(translator)
 
@@ -138,6 +149,7 @@ func (s *server) GetProfile(dest *pb.GetDestination, stream pb.Destination_GetPr
 	select {
 	case <-s.shutdown:
 	case <-stream.Context().Done():
+		log.Debugf("GetProfile(%+v) cancelled", dest)
 	}
 
 	return nil
