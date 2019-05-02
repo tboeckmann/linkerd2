@@ -1,27 +1,61 @@
 package watcher
 
 import (
+	"fmt"
 	"reflect"
 	"sort"
 	"testing"
 
 	"github.com/linkerd/linkerd2/controller/k8s"
-	"github.com/linkerd/linkerd2/pkg/addr"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
+
+	logging "github.com/sirupsen/logrus"
 )
+
+type bufferingEndpointListener struct {
+	added             []string
+	removed           []string
+	noEndpointsCalled bool
+	noEndpointsExists bool
+}
+
+func newBufferingEndpointListener() bufferingEndpointListener {
+	return bufferingEndpointListener{
+		added:   []string{},
+		removed: []string{},
+	}
+}
+
+func addressString(address Address) string {
+	return fmt.Sprintf("%s:%d", address.Ip, address.Port)
+}
+
+func (bel bufferingEndpointListener) Add(set PodSet) {
+	for _, address := range set {
+
+		bel.added = append(bel.added, addressString(address))
+	}
+}
+
+func (bel bufferingEndpointListener) Remove(set PodSet) {
+	for _, address := range set {
+		bel.removed = append(bel.removed, addressString(address))
+	}
+}
+
+func (bel bufferingEndpointListener) NoEndpoints(exists bool) {
+	bel.noEndpointsCalled = true
+	bel.noEndpointsExists = exists
+}
 
 func TestEndpointsWatcher(t *testing.T) {
 	for _, tt := range []struct {
 		serviceType                      string
 		k8sConfigs                       []string
-		service                          *serviceID
+		service                          ServiceID
 		port                             uint32
 		expectedAddresses                []string
 		expectedNoEndpoints              bool
 		expectedNoEndpointsServiceExists bool
-		expectedState                    servicePorts
 	}{
 		{
 			serviceType: "local services",
@@ -88,7 +122,7 @@ status:
   phase: Running
   podIP: 172.17.0.20`,
 			},
-			service: &serviceID{namespace: "ns", name: "name1"},
+			service: ServiceID{Namespace: "ns", Name: "name1"},
 			port:    uint32(8989),
 			expectedAddresses: []string{
 				"172.17.0.12:8989",
@@ -97,43 +131,6 @@ status:
 			},
 			expectedNoEndpoints:              false,
 			expectedNoEndpointsServiceExists: false,
-			expectedState: servicePorts{
-				serviceID{namespace: "ns", name: "name1"}: map[uint32]*servicePort{
-					8989: {
-						addresses: []*updateAddress{
-							makeUpdateAddress("172.17.0.12", 8989, "name1-1"),
-							makeUpdateAddress("172.17.0.19", 8989, "name1-2"),
-							makeUpdateAddress("172.17.0.20", 8989, "name1-3"),
-						},
-						targetPort: intstr.IntOrString{Type: intstr.Int, IntVal: 8989},
-						endpoints: &corev1.Endpoints{
-							ObjectMeta: metav1.ObjectMeta{
-								Name:      "name1",
-								Namespace: "ns",
-							},
-							Subsets: []corev1.EndpointSubset{
-								{
-									Addresses: []corev1.EndpointAddress{
-										{
-											IP:        "172.17.0.12",
-											TargetRef: &corev1.ObjectReference{Kind: "Pod", Namespace: "ns", Name: "name1-1"},
-										},
-										{
-											IP:        "172.17.0.19",
-											TargetRef: &corev1.ObjectReference{Kind: "Pod", Namespace: "ns", Name: "name1-2"},
-										},
-										{
-											IP:        "172.17.0.20",
-											TargetRef: &corev1.ObjectReference{Kind: "Pod", Namespace: "ns", Name: "name1-3"},
-										},
-									},
-									Ports: []corev1.EndpointPort{{Port: 8989}},
-								},
-							},
-						},
-					},
-				},
-			},
 		},
 		{
 			// Test for the issue described in linkerd/linkerd2#1405.
@@ -189,7 +186,7 @@ status:
   podIp: 10.233.88.244
   phase: Running`,
 			},
-			service: &serviceID{namespace: "ns", name: "name1"},
+			service: ServiceID{Namespace: "ns", Name: "name1"},
 			port:    uint32(8989),
 			expectedAddresses: []string{
 				"10.233.66.239:8990",
@@ -197,38 +194,6 @@ status:
 			},
 			expectedNoEndpoints:              false,
 			expectedNoEndpointsServiceExists: false,
-			expectedState: servicePorts{
-				serviceID{namespace: "ns", name: "name1"}: map[uint32]*servicePort{
-					8989: {
-						addresses: []*updateAddress{
-							makeUpdateAddress("10.233.66.239", 8990, "name1-f748fb6b4-hpwpw"),
-							makeUpdateAddress("10.233.88.244", 8990, "name1-f748fb6b4-6vcmw"),
-						},
-						targetPort: intstr.IntOrString{Type: intstr.String, StrVal: ""},
-						endpoints: &corev1.Endpoints{
-							ObjectMeta: metav1.ObjectMeta{
-								Name:      "name1",
-								Namespace: "ns",
-							},
-							Subsets: []corev1.EndpointSubset{
-								{
-									Addresses: []corev1.EndpointAddress{
-										{
-											IP:        "10.233.66.239",
-											TargetRef: &corev1.ObjectReference{Kind: "Pod", Namespace: "ns", Name: "name1-f748fb6b4-hpwpw"},
-										},
-										{
-											IP:        "10.233.88.244",
-											TargetRef: &corev1.ObjectReference{Kind: "Pod", Namespace: "ns", Name: "name1-f748fb6b4-6vcmw"},
-										},
-									},
-									Ports: []corev1.EndpointPort{{Port: 8990, Protocol: "TCP"}},
-								},
-							},
-						},
-					},
-				},
-			},
 		},
 		{
 			// Test for the issue described in linkerd/linkerd2#1853.
@@ -272,40 +237,13 @@ status:
   podIp: 10.1.30.135
   phase: Running`,
 			},
-			service: &serviceID{namespace: "ns", name: "world"},
+			service: ServiceID{Namespace: "ns", Name: "world"},
 			port:    uint32(7778),
 			expectedAddresses: []string{
 				"10.1.30.135:7779",
 			},
 			expectedNoEndpoints:              false,
 			expectedNoEndpointsServiceExists: false,
-			expectedState: servicePorts{
-				serviceID{namespace: "ns", name: "world"}: map[uint32]*servicePort{
-					7778: {
-						addresses: []*updateAddress{
-							makeUpdateAddress("10.1.30.135", 7779, "world-575bf846b4-tp4hw"),
-						},
-						targetPort: intstr.IntOrString{Type: intstr.String, StrVal: "app"},
-						endpoints: &corev1.Endpoints{
-							ObjectMeta: metav1.ObjectMeta{
-								Name:      "world",
-								Namespace: "ns",
-							},
-							Subsets: []corev1.EndpointSubset{
-								{
-									Addresses: []corev1.EndpointAddress{
-										{
-											IP:        "10.1.30.135",
-											TargetRef: &corev1.ObjectReference{Kind: "Pod", Namespace: "ns", Name: "world-575bf846b4-tp4hw"},
-										},
-									},
-									Ports: []corev1.EndpointPort{{Name: "app", Port: 7779, Protocol: "TCP"}},
-								},
-							},
-						},
-					},
-				},
-			},
 		},
 		{
 			serviceType: "local services with missing pods",
@@ -354,48 +292,13 @@ status:
   phase: Running
   podIP: 172.17.0.25`,
 			},
-			service: &serviceID{namespace: "ns", name: "name1"},
+			service: ServiceID{Namespace: "ns", Name: "name1"},
 			port:    uint32(8989),
 			expectedAddresses: []string{
 				"172.17.0.25:8989",
 			},
 			expectedNoEndpoints:              false,
 			expectedNoEndpointsServiceExists: false,
-			expectedState: servicePorts{
-				serviceID{namespace: "ns", name: "name1"}: map[uint32]*servicePort{
-					8989: {
-						addresses: []*updateAddress{
-							makeUpdateAddress("172.17.0.25", 8989, "name1-3"),
-						},
-						targetPort: intstr.IntOrString{Type: intstr.Int, IntVal: 8989},
-						endpoints: &corev1.Endpoints{
-							ObjectMeta: metav1.ObjectMeta{
-								Name:      "name1",
-								Namespace: "ns",
-							},
-							Subsets: []corev1.EndpointSubset{
-								{
-									Addresses: []corev1.EndpointAddress{
-										{
-											IP:        "172.17.0.23",
-											TargetRef: &corev1.ObjectReference{Kind: "Pod", Namespace: "ns", Name: "name1-1"},
-										},
-										{
-											IP:        "172.17.0.24",
-											TargetRef: &corev1.ObjectReference{Kind: "Pod", Namespace: "ns", Name: "name1-2"},
-										},
-										{
-											IP:        "172.17.0.25",
-											TargetRef: &corev1.ObjectReference{Kind: "Pod", Namespace: "ns", Name: "name1-3"},
-										},
-									},
-									Ports: []corev1.EndpointPort{{Port: 8989}},
-								},
-							},
-						},
-					},
-				},
-			},
 		},
 		{
 			serviceType: "local services with no endpoints",
@@ -410,19 +313,11 @@ spec:
   ports:
   - port: 7979`,
 			},
-			service:                          &serviceID{namespace: "ns", name: "name2"},
+			service:                          ServiceID{Namespace: "ns", Name: "name2"},
 			port:                             uint32(7979),
 			expectedAddresses:                []string{},
 			expectedNoEndpoints:              true,
 			expectedNoEndpointsServiceExists: true,
-			expectedState: servicePorts{
-				serviceID{namespace: "ns", name: "name2"}: map[uint32]*servicePort{
-					7979: {
-						targetPort: intstr.IntOrString{Type: intstr.Int, IntVal: 7979},
-						endpoints:  &corev1.Endpoints{},
-					},
-				},
-			},
 		},
 		{
 			serviceType: "external name services",
@@ -436,36 +331,20 @@ spec:
   type: ExternalName
   externalName: foo`,
 			},
-			service:                          &serviceID{namespace: "ns", name: "name3"},
+			service:                          ServiceID{Namespace: "ns", Name: "name3"},
 			port:                             uint32(6969),
 			expectedAddresses:                []string{},
 			expectedNoEndpoints:              true,
 			expectedNoEndpointsServiceExists: false,
-			expectedState: servicePorts{
-				serviceID{namespace: "ns", name: "name3"}: map[uint32]*servicePort{
-					6969: {
-						targetPort: intstr.IntOrString{Type: intstr.Int, IntVal: 6969},
-						endpoints:  &corev1.Endpoints{},
-					},
-				},
-			},
 		},
 		{
 			serviceType:                      "services that do not yet exist",
 			k8sConfigs:                       []string{},
-			service:                          &serviceID{namespace: "ns", name: "name4"},
+			service:                          ServiceID{Namespace: "ns", Name: "name4"},
 			port:                             uint32(5959),
 			expectedAddresses:                []string{},
 			expectedNoEndpoints:              true,
 			expectedNoEndpointsServiceExists: false,
-			expectedState: servicePorts{
-				serviceID{namespace: "ns", name: "name4"}: map[uint32]*servicePort{
-					5959: {
-						targetPort: intstr.IntOrString{Type: intstr.Int, IntVal: 5959},
-						endpoints:  &corev1.Endpoints{},
-					},
-				},
-			},
 		},
 	} {
 		tt := tt // pin
@@ -475,21 +354,17 @@ spec:
 				t.Fatalf("NewFakeAPI returned an error: %s", err)
 			}
 
-			watcher := newEndpointsWatcher(k8sAPI)
+			watcher := NewEndpointsWatcher(k8sAPI, logging.WithFields(logging.Fields{"test": t.Name}))
 
 			k8sAPI.Sync()
 
-			listener, cancelFn := newCollectUpdateListener()
-			defer cancelFn()
+			listener := newBufferingEndpointListener()
 
-			err = watcher.subscribe(tt.service, tt.port, listener)
-			if err != nil {
-				t.Fatalf("subscribe returned an error: %s", err)
-			}
+			watcher.Subscribe(tt.service, tt.port, listener)
 
 			actualAddresses := make([]string, 0)
 			for _, add := range listener.added {
-				actualAddresses = append(actualAddresses, addr.ProxyAddressToString(add.address))
+				actualAddresses = append(actualAddresses, add)
 			}
 			sort.Strings(actualAddresses)
 
@@ -505,12 +380,6 @@ spec:
 			if listener.noEndpointsExists != tt.expectedNoEndpointsServiceExists {
 				t.Fatalf("Expected noEndpointsExists to be [%t], got [%t]",
 					tt.expectedNoEndpointsServiceExists, listener.noEndpointsExists)
-			}
-
-			state := watcher.getState()
-			err = equalServicePorts(state, tt.expectedState)
-			if err != nil {
-				t.Fatalf("ServicePort match error: %s\nExpected state: %v, got: %v", err, tt.expectedState, state)
 			}
 		})
 	}

@@ -45,18 +45,6 @@ func newEndpointTranslator(
 	return &endpointTranslator{controllerNS, identityTrustDomain, enableH2Upgrade, labels, stream, stopCh, log}
 }
 
-func (et *endpointTranslator) ClientClose() <-chan struct{} {
-	return et.stream.Context().Done()
-}
-
-func (et *endpointTranslator) ServerClose() <-chan struct{} {
-	return et.stopCh
-}
-
-func (et *endpointTranslator) Stop() {
-	close(et.stopCh)
-}
-
 func (et *endpointTranslator) Add(set watcher.PodSet) {
 	addrs := []*pb.WeightedAddr{}
 	for _, address := range set {

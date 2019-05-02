@@ -1,6 +1,7 @@
 package watcher
 
 import (
+	"fmt"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"regexp"
 )
@@ -19,3 +20,7 @@ type (
 	Port      = uint32
 	namedPort = intstr.IntOrString
 )
+
+func (i ID) String() string {
+	return fmt.Sprintf("%s/%s", i.Namespace, i.Name)
+}

@@ -6,13 +6,28 @@ import (
 
 	sp "github.com/linkerd/linkerd2/controller/gen/apis/serviceprofile/v1alpha1"
 	"github.com/linkerd/linkerd2/controller/k8s"
+	logging "github.com/sirupsen/logrus"
 )
+
+type bufferingProfileListener struct {
+	profiles []*sp.ServiceProfile
+}
+
+func newBufferingProfileListener() bufferingProfileListener {
+	return bufferingProfileListener{
+		profiles: []*sp.ServiceProfile{},
+	}
+}
+
+func (bpl bufferingProfileListener) Update(profile *sp.ServiceProfile) {
+	bpl.profiles = append(bpl.profiles, profile)
+}
 
 func TestProfileWatcher(t *testing.T) {
 	for _, tt := range []struct {
 		name             string
 		k8sConfigs       []string
-		service          profileID
+		service          ProfileID
 		expectedProfiles []*sp.ServiceProfileSpec
 	}{
 		{
@@ -33,7 +48,7 @@ spec:
           min: 500
       isFailure: true`,
 			},
-			service: profileID{namespace: "linkerd", name: "foobar.ns.svc.cluster.local"},
+			service: ProfileID{Namespace: "linkerd", Name: "foobar.ns.svc.cluster.local"},
 			expectedProfiles: []*sp.ServiceProfileSpec{
 				{
 					Routes: []*sp.RouteSpec{
@@ -59,7 +74,7 @@ spec:
 		{
 			name:       "service without profile",
 			k8sConfigs: []string{},
-			service:    profileID{namespace: "linkerd", name: "foobar.ns"},
+			service:    ProfileID{Namespace: "linkerd", Name: "foobar.ns"},
 			expectedProfiles: []*sp.ServiceProfileSpec{
 				nil,
 			},
@@ -72,17 +87,13 @@ spec:
 				t.Fatalf("NewFakeAPI returned an error: %s", err)
 			}
 
-			watcher := newProfileWatcher(k8sAPI)
+			watcher := NewProfileWatcher(k8sAPI, logging.WithFields(logging.Fields{"test": t.Name}))
 
 			k8sAPI.Sync()
 
-			listener, cancelFn := newCollectProfileListener()
-			defer cancelFn()
+			listener := newBufferingProfileListener()
 
-			err = watcher.subscribeToProfile(tt.service, listener)
-			if err != nil {
-				t.Fatalf("subscribe returned an error: %s", err)
-			}
+			watcher.Subscribe(tt.service, listener)
 
 			actualProfiles := make([]*sp.ServiceProfileSpec, 0)
 

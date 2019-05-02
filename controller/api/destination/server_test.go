@@ -9,6 +9,7 @@ import (
 
 	"github.com/golang/protobuf/proto"
 	pb "github.com/linkerd/linkerd2-proxy-api/go/destination"
+	"github.com/linkerd/linkerd2/controller/api/destination/watcher"
 	discoveryPb "github.com/linkerd/linkerd2/controller/gen/controller/discovery"
 	"github.com/linkerd/linkerd2/controller/k8s"
 	"google.golang.org/grpc"
@@ -69,7 +70,7 @@ func TestBuildResolver(t *testing.T) {
 type mockStreamingDestinationResolver struct {
 	hostReceived             string
 	portReceived             int
-	listenerReceived         endpointUpdateListener
+	listenerReceived         watcher.EndpointUpdateListener
 	canResolveToReturn       bool
 	errToReturnForCanResolve error
 	errToReturnForResolution error
@@ -79,19 +80,15 @@ func (m *mockStreamingDestinationResolver) canResolve(host string, port int) (bo
 	return m.canResolveToReturn, m.errToReturnForCanResolve
 }
 
-func (m *mockStreamingDestinationResolver) streamResolution(host string, port int, listener endpointUpdateListener) error {
+func (m *mockStreamingDestinationResolver) streamResolution(host string, port int, listener watcher.EndpointUpdateListener) error {
 	m.hostReceived = host
 	m.portReceived = port
 	m.listenerReceived = listener
 	return m.errToReturnForResolution
 }
 
-func (m *mockStreamingDestinationResolver) streamProfiles(host string, clientNs string, listener profileUpdateListener) error {
+func (m *mockStreamingDestinationResolver) streamProfiles(host string, clientNs string, listener watcher.ProfileUpdateListener) error {
 	return nil
-}
-
-func (m *mockStreamingDestinationResolver) getState() servicePorts {
-	return servicePorts{}
 }
 
 func (m *mockStreamingDestinationResolver) stop() {}
