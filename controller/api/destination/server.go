@@ -77,9 +77,10 @@ func NewServer(
 
 func (s *server) Get(dest *pb.GetDestination, stream pb.Destination_GetServer) error {
 	client, _ := peer.FromContext(stream.Context())
-	log := s.log.WithFields(logging.Fields{
-		"remote": client.Addr,
-	})
+	log := s.log
+	if client != nil {
+		log = s.log.WithField("remote", client.Addr)
+	}
 	log.Debugf("Get %s", dest.GetPath())
 
 	service, port, err := s.getServiceAndPort(dest)

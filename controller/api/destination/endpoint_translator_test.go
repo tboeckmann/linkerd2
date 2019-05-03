@@ -2,69 +2,107 @@ package destination
 
 import (
 	"reflect"
+	"sort"
 	"testing"
 
 	pb "github.com/linkerd/linkerd2-proxy-api/go/destination"
 	"github.com/linkerd/linkerd2-proxy-api/go/net"
 	"github.com/linkerd/linkerd2/controller/api/destination/watcher"
-	pkgAddr "github.com/linkerd/linkerd2/pkg/addr"
-	pkgK8s "github.com/linkerd/linkerd2/pkg/k8s"
+	"github.com/linkerd/linkerd2/pkg/addr"
+	"github.com/linkerd/linkerd2/pkg/k8s"
 	logging "github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-const (
-	deploymentKind = "deployment"
-	podDeployment  = "pod-deployment"
-	thisNS         = "this-namespace"
-)
-
 var (
-	addedAddress1 = &net.TcpAddress{
-		Ip:   &net.IPAddress{Ip: &net.IPAddress_Ipv4{Ipv4: 1}},
+	normalPod = watcher.Address{
+		Ip:   "1.1.1.1",
 		Port: 1,
+		Pod: &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "pod1",
+				Namespace: "ns",
+				Annotations: map[string]string{
+					k8s.IdentityModeAnnotation: k8s.IdentityModeDefault,
+				},
+				Labels: map[string]string{
+					k8s.ControllerNSLabel:    "linkerd",
+					k8s.ProxyDeploymentLabel: "deployment-name",
+				},
+			},
+			Spec: corev1.PodSpec{
+				ServiceAccountName: "serviceaccount-name",
+			},
+		},
+		OwnerKind: "replicationcontroller",
+		OwnerName: "rc-name",
 	}
 
-	addedAddress2 = &net.TcpAddress{
-		Ip:   &net.IPAddress{Ip: &net.IPAddress_Ipv4{Ipv4: 2}},
+	tlsOptionalPod = watcher.Address{
+		Ip:   "1.1.1.2",
 		Port: 2,
-	}
-
-	removedAddress1 = &net.TcpAddress{
-		Ip:   &net.IPAddress{Ip: &net.IPAddress_Ipv4{Ipv4: 100}},
-		Port: 100,
-	}
-
-	pod1 = &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "pod1",
-			Namespace: "ns",
+		Pod: &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "pod2",
+				Namespace: "ns",
+				Annotations: map[string]string{
+					k8s.IdentityModeAnnotation: "optional",
+				},
+				Labels: map[string]string{
+					k8s.ControllerNSLabel:    "linkerd",
+					k8s.ProxyDeploymentLabel: "deployment-name",
+				},
+			},
 		},
 	}
 
-	pod2 = &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "pod2",
-			Namespace: "ns",
+	otherMeshPod = watcher.Address{
+		Ip:   "1.1.1.3",
+		Port: 3,
+		Pod: &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "pod3",
+				Namespace: "ns",
+				Annotations: map[string]string{
+					k8s.IdentityModeAnnotation: k8s.IdentityModeDefault,
+				},
+				Labels: map[string]string{
+					k8s.ControllerNSLabel:    "other-linkerd-namespace",
+					k8s.ProxyDeploymentLabel: "deployment-name",
+				},
+			},
 		},
 	}
 
-	add = []*pb.WeightedAddr{}
-
-	remove = []*net.TcpAddress{}
+	tlsDisabledPod = watcher.Address{
+		Ip:   "1.1.1.4",
+		Port: 4,
+		Pod: &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "pod4",
+				Namespace: "ns",
+				Annotations: map[string]string{
+					k8s.IdentityModeAnnotation: k8s.IdentityModeDisabled,
+				},
+				Labels: map[string]string{
+					k8s.ControllerNSLabel:    "linkerd",
+					k8s.ProxyDeploymentLabel: "deployment-name",
+				},
+			},
+		},
+	}
 )
 
 func makeEndpointTranslator(t *testing.T) (*mockDestinationGetServer, *endpointTranslator) {
 	mockGetServer := &mockDestinationGetServer{updatesReceived: []*pb.Update{}}
 	translator := newEndpointTranslator(
 		"linkerd",
-		"",
+		"trust.domain",
 		false,
-		watcher.ServiceID{Name: "service-name", Namespace: thisNS},
+		watcher.ServiceID{Name: "service-name", Namespace: "service-ns"},
 		mockGetServer,
-		logging.WithFields(logging.Fields{"test": t.Name}),
+		logging.WithField("test", t.Name),
 	)
 	return mockGetServer, translator
 }
@@ -72,7 +110,9 @@ func makeEndpointTranslator(t *testing.T) (*mockDestinationGetServer, *endpointT
 func TestEndpointTranslator(t *testing.T) {
 	t.Run("Sends one update for add and another for remove", func(t *testing.T) {
 		mockGetServer, translator := makeEndpointTranslator(t)
-		translator.Update(add, remove)
+
+		translator.Add(mkPodSet(normalPod))
+		translator.Remove(mkPodSet(tlsOptionalPod))
 
 		expectedNumUpdates := 2
 		actualNumUpdates := len(mockGetServer.updatesReceived)
@@ -84,7 +124,8 @@ func TestEndpointTranslator(t *testing.T) {
 	t.Run("Sends addresses as removed or added", func(t *testing.T) {
 		mockGetServer, translator := makeEndpointTranslator(t)
 
-		translator.Update(add, remove)
+		translator.Add(mkPodSet(normalPod, tlsOptionalPod))
+		translator.Remove(mkPodSet(tlsDisabledPod))
 
 		addressesAdded := mockGetServer.updatesReceived[0].GetAdd().Addrs
 		actualNumberOfAdded := len(addressesAdded)
@@ -100,54 +141,31 @@ func TestEndpointTranslator(t *testing.T) {
 			t.Fatalf("Expecting [%d] addresses to be removed, got [%d]: %v", expectedNumberOfRemoved, actualNumberOfRemoved, addressesRemoved)
 		}
 
-		checkAddress(t, addressesAdded[0], addedAddress1)
-		checkAddress(t, addressesAdded[1], addedAddress2)
-
-		actualAddressRemoved := addressesRemoved[0]
-		expectedAddressRemoved := removedAddress1
-		if !reflect.DeepEqual(actualAddressRemoved, expectedAddressRemoved) {
-			t.Fatalf("Expected remove address to be [%s], but it was [%s]", expectedAddressRemoved, actualAddressRemoved)
-		}
+		sort.Slice(addressesAdded, func(i, j int) bool {
+			return addressesAdded[i].GetAddr().Port < addressesAdded[j].GetAddr().Port
+		})
+		checkAddressAndWeight(t, addressesAdded[0], normalPod)
+		checkAddressAndWeight(t, addressesAdded[1], tlsOptionalPod)
+		checkAddress(t, addressesRemoved[0], tlsDisabledPod)
 	})
 
 	t.Run("Sends metric labels with added addresses", func(t *testing.T) {
-		expectedServiceName := "service-name"
-		expectedPodName := pod1.Name
-		expectedNamespace := thisNS
-		expectedReplicationControllerName := "rc-name"
-		expectedServiceAccountName := "serviceaccount-name"
-
-		podForAddedAddress1 := &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      expectedPodName,
-				Namespace: expectedNamespace,
-			},
-			Status: corev1.PodStatus{
-				Phase: corev1.PodRunning,
-			},
-			Spec: corev1.PodSpec{
-				ServiceAccountName: expectedServiceAccountName,
-			},
-		}
-
 		mockGetServer, translator := makeEndpointTranslator(t)
 
-		add := []*updateAddress{
-			{address: addedAddress1, pod: podForAddedAddress1},
-		}
-		translator.Update(add, nil)
+		translator.Add(mkPodSet(normalPod))
 
 		actualGlobalMetricLabels := mockGetServer.updatesReceived[0].GetAdd().MetricLabels
-		expectedGlobalMetricLabels := map[string]string{"namespace": expectedNamespace, "service": expectedServiceName}
+		expectedGlobalMetricLabels := map[string]string{"namespace": "service-ns", "service": "service-name"}
 		if !reflect.DeepEqual(actualGlobalMetricLabels, expectedGlobalMetricLabels) {
 			t.Fatalf("Expected global metric labels sent to be [%v] but was [%v]", expectedGlobalMetricLabels, actualGlobalMetricLabels)
 		}
 
 		actualAddedAddress1MetricLabels := mockGetServer.updatesReceived[0].GetAdd().Addrs[0].MetricLabels
 		expectedAddedAddress1MetricLabels := map[string]string{
-			"pod": expectedPodName,
-			"replicationcontroller": expectedReplicationControllerName,
-			"serviceaccount":        expectedServiceAccountName,
+			"pod": "pod1",
+			"replicationcontroller": "rc-name",
+			"serviceaccount":        "serviceaccount-name",
+			"control_plane_ns":      "linkerd",
 		}
 		if !reflect.DeepEqual(actualAddedAddress1MetricLabels, expectedAddedAddress1MetricLabels) {
 			t.Fatalf("Expected global metric labels sent to be [%v] but was [%v]", expectedAddedAddress1MetricLabels, actualAddedAddress1MetricLabels)
@@ -155,51 +173,13 @@ func TestEndpointTranslator(t *testing.T) {
 	})
 
 	t.Run("Sends TlsIdentity when enabled", func(t *testing.T) {
-		expectedPodName := pod1.Name
-		expectedPodNamespace := thisNS
-		expectedControllerNamespace := "linkerd-namespace"
-		expectedPodDeployment := podDeployment
 		expectedTLSIdentity := &pb.TlsIdentity_DnsLikeIdentity{
-			Name: "this-serviceaccount.this-namespace.serviceaccount.identity.linkerd-namespace.trust.domain",
+			Name: "serviceaccount-name.ns.serviceaccount.identity.linkerd.trust.domain",
 		}
 
-		podForAddedAddress1 := &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      expectedPodName,
-				Namespace: expectedPodNamespace,
-				Annotations: map[string]string{
-					pkgK8s.IdentityModeAnnotation: pkgK8s.IdentityModeDefault,
-				},
-				Labels: map[string]string{
-					pkgK8s.ControllerNSLabel:    expectedControllerNamespace,
-					pkgK8s.ProxyDeploymentLabel: expectedPodDeployment,
-				},
-			},
-			Status: corev1.PodStatus{
-				Phase: corev1.PodRunning,
-			},
-			Spec: corev1.PodSpec{
-				ServiceAccountName: "this-serviceaccount",
-			},
-		}
+		mockGetServer, translator := makeEndpointTranslator(t)
 
-		ownerKindAndName := func(pod *corev1.Pod) (string, string) {
-			return deploymentKind, expectedPodDeployment
-		}
-
-		mockGetServer := &mockDestinationGetServer{updatesReceived: []*pb.Update{}}
-		listener := newEndpointListener(
-			mockGetServer,
-			ownerKindAndName,
-			false,
-			expectedControllerNamespace,
-			"trust.domain",
-		)
-
-		add := []*updateAddress{
-			{address: addedAddress1, pod: podForAddedAddress1},
-		}
-		listener.Update(add, nil)
+		translator.Add(mkPodSet(normalPod))
 
 		addrs := mockGetServer.updatesReceived[0].GetAdd().GetAddrs()
 		if len(addrs) != 1 {
@@ -213,38 +193,9 @@ func TestEndpointTranslator(t *testing.T) {
 	})
 
 	t.Run("Does not send TlsIdentity for non-default identity-modes", func(t *testing.T) {
-		expectedPodName := "pod1"
-		expectedPodNamespace := thisNS
-		expectedControllerNamespace := "other-linkerd-namespace"
-		expectedPodDeployment := podDeployment
-
-		podForAddedAddress1 := &v1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      expectedPodName,
-				Namespace: expectedPodNamespace,
-				Annotations: map[string]string{
-					pkgK8s.IdentityModeAnnotation: "optional",
-				},
-				Labels: map[string]string{
-					pkgK8s.ControllerNSLabel:    expectedControllerNamespace,
-					pkgK8s.ProxyDeploymentLabel: expectedPodDeployment,
-				},
-			},
-			Status: v1.PodStatus{
-				Phase: v1.PodRunning,
-			},
-		}
-
-		ownerKindAndName := func(pod *v1.Pod) (string, string) {
-			return deploymentKind, expectedPodDeployment
-		}
-
 		mockGetServer, translator := makeEndpointTranslator(t)
 
-		add := []*updateAddress{
-			{address: addedAddress1, pod: podForAddedAddress1},
-		}
-		translator.Update(add, nil)
+		translator.Add(mkPodSet(tlsOptionalPod))
 
 		addrs := mockGetServer.updatesReceived[0].GetAdd().GetAddrs()
 		if len(addrs) != 1 {
@@ -257,34 +208,9 @@ func TestEndpointTranslator(t *testing.T) {
 	})
 
 	t.Run("Does not send TlsIdentity for other meshes", func(t *testing.T) {
-		expectedPodName := "pod1"
-		expectedPodNamespace := thisNS
-		expectedControllerNamespace := "other-linkerd-namespace"
-		expectedPodDeployment := podDeployment
-
-		podForAddedAddress1 := &v1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      expectedPodName,
-				Namespace: expectedPodNamespace,
-				Annotations: map[string]string{
-					pkgK8s.IdentityModeAnnotation: pkgK8s.IdentityModeDefault,
-				},
-				Labels: map[string]string{
-					pkgK8s.ControllerNSLabel:    expectedControllerNamespace,
-					pkgK8s.ProxyDeploymentLabel: expectedPodDeployment,
-				},
-			},
-			Status: v1.PodStatus{
-				Phase: v1.PodRunning,
-			},
-		}
-
 		mockGetServer, translator := makeEndpointTranslator(t)
 
-		add := []*updateAddress{
-			{address: addedAddress1, pod: podForAddedAddress1},
-		}
-		translator.Update(add, nil)
+		translator.Add(mkPodSet(otherMeshPod))
 
 		addrs := mockGetServer.updatesReceived[0].GetAdd().GetAddrs()
 		if len(addrs) != 1 {
@@ -297,31 +223,9 @@ func TestEndpointTranslator(t *testing.T) {
 	})
 
 	t.Run("Does not send TlsIdentity when not enabled", func(t *testing.T) {
-		expectedPodName := pod1.Name
-		expectedPodNamespace := thisNS
-		expectedControllerNamespace := "linkerd-namespace"
-		expectedPodDeployment := podDeployment
-
-		podForAddedAddress1 := &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      expectedPodName,
-				Namespace: expectedPodNamespace,
-				Labels: map[string]string{
-					pkgK8s.ControllerNSLabel:    expectedControllerNamespace,
-					pkgK8s.ProxyDeploymentLabel: expectedPodDeployment,
-				},
-			},
-			Status: corev1.PodStatus{
-				Phase: corev1.PodRunning,
-			},
-		}
-
 		mockGetServer, translator := makeEndpointTranslator(t)
 
-		add := []*updateAddress{
-			{address: addedAddress1, pod: podForAddedAddress1},
-		}
-		translator.Update(add, nil)
+		translator.Add(mkPodSet(tlsDisabledPod))
 
 		addrs := mockGetServer.updatesReceived[0].GetAdd().GetAddrs()
 		if len(addrs) != 1 {
@@ -334,22 +238,32 @@ func TestEndpointTranslator(t *testing.T) {
 	})
 }
 
-func TestUpdateAddress(t *testing.T) {
-	t.Run("Correctly clones an update address", func(t *testing.T) {
-		ua := updateAddress{address: addedAddress1, pod: pod1}
-		ua2 := ua.clone()
-		if !reflect.DeepEqual(ua, *ua2) {
-			t.Fatalf("Clone failed, original: %+v, clone: %+v", ua, ua2)
-		}
-	})
+func mkPodSet(pods ...watcher.Address) watcher.PodSet {
+	set := make(watcher.PodSet)
+	for _, p := range pods {
+		id := watcher.PodID{Name: p.Pod.Name, Namespace: p.Pod.Namespace}
+		set[id] = p
+	}
+	return set
 }
 
-func checkAddress(t *testing.T, addr *pb.WeightedAddr, expectedAddress *net.TcpAddress) {
-	actualAddress := addr.Addr
-	actualWeight := addr.Weight
-	expectedWeight := uint32(pkgAddr.DefaultWeight)
+func checkAddressAndWeight(t *testing.T, actual *pb.WeightedAddr, expected watcher.Address) {
+	checkAddress(t, actual.GetAddr(), expected)
+	if actual.GetWeight() != defaultWeight {
+		t.Fatalf("Expected weight [%+v] but got [%+v]", defaultWeight, actual.GetWeight())
+	}
+}
 
-	if !reflect.DeepEqual(actualAddress, expectedAddress) || actualWeight != expectedWeight {
-		t.Fatalf("Expected added address to be [%+v] and weight to be [%d], but it was [%+v] and [%d]", expectedAddress, expectedWeight, actualAddress, actualWeight)
+func checkAddress(t *testing.T, actual *net.TcpAddress, expected watcher.Address) {
+	expectedAddr, err := addr.ParseProxyIPV4(expected.Ip)
+	expectedTcp := net.TcpAddress{
+		Ip:   expectedAddr,
+		Port: expected.Port,
+	}
+	if err != nil {
+		t.Fatalf("Failed to parse expected IP [%s]: %s", expected.Ip, err)
+	}
+	if !reflect.DeepEqual(*actual, expectedTcp) {
+		t.Fatalf("Expected address [%+v] but got [%+v]", expectedTcp, *actual)
 	}
 }

@@ -13,13 +13,13 @@ type bufferingProfileListener struct {
 	profiles []*sp.ServiceProfile
 }
 
-func newBufferingProfileListener() bufferingProfileListener {
-	return bufferingProfileListener{
+func newBufferingProfileListener() *bufferingProfileListener {
+	return &bufferingProfileListener{
 		profiles: []*sp.ServiceProfile{},
 	}
 }
 
-func (bpl bufferingProfileListener) Update(profile *sp.ServiceProfile) {
+func (bpl *bufferingProfileListener) Update(profile *sp.ServiceProfile) {
 	bpl.profiles = append(bpl.profiles, profile)
 }
 
@@ -87,7 +87,7 @@ spec:
 				t.Fatalf("NewFakeAPI returned an error: %s", err)
 			}
 
-			watcher := NewProfileWatcher(k8sAPI, logging.WithFields(logging.Fields{"test": t.Name}))
+			watcher := NewProfileWatcher(k8sAPI, logging.WithField("test", t.Name))
 
 			k8sAPI.Sync()
 

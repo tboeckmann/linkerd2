@@ -18,8 +18,8 @@ type bufferingEndpointListener struct {
 	noEndpointsExists bool
 }
 
-func newBufferingEndpointListener() bufferingEndpointListener {
-	return bufferingEndpointListener{
+func newBufferingEndpointListener() *bufferingEndpointListener {
+	return &bufferingEndpointListener{
 		added:   []string{},
 		removed: []string{},
 	}
@@ -29,20 +29,20 @@ func addressString(address Address) string {
 	return fmt.Sprintf("%s:%d", address.Ip, address.Port)
 }
 
-func (bel bufferingEndpointListener) Add(set PodSet) {
+func (bel *bufferingEndpointListener) Add(set PodSet) {
+	fmt.Printf("bel got add of %d", len(set))
 	for _, address := range set {
-
 		bel.added = append(bel.added, addressString(address))
 	}
 }
 
-func (bel bufferingEndpointListener) Remove(set PodSet) {
+func (bel *bufferingEndpointListener) Remove(set PodSet) {
 	for _, address := range set {
 		bel.removed = append(bel.removed, addressString(address))
 	}
 }
 
-func (bel bufferingEndpointListener) NoEndpoints(exists bool) {
+func (bel *bufferingEndpointListener) NoEndpoints(exists bool) {
 	bel.noEndpointsCalled = true
 	bel.noEndpointsExists = exists
 }
@@ -100,6 +100,9 @@ kind: Pod
 metadata:
   name: name1-1
   namespace: ns
+  ownerReferences:
+  - kind: ReplicaSet
+    name: rs-1
 status:
   phase: Running
   podIP: 172.17.0.12`,
@@ -109,6 +112,9 @@ kind: Pod
 metadata:
   name: name1-2
   namespace: ns
+  ownerReferences:
+  - kind: ReplicaSet
+    name: rs-1
 status:
   phase: Running
   podIP: 172.17.0.19`,
@@ -118,6 +124,9 @@ kind: Pod
 metadata:
   name: name1-3
   namespace: ns
+  ownerReferences:
+  - kind: ReplicaSet
+    name: rs-1
 status:
   phase: Running
   podIP: 172.17.0.20`,
@@ -173,6 +182,9 @@ kind: Pod
 metadata:
   name: name1-f748fb6b4-hpwpw
   namespace: ns
+  ownerReferences:
+  - kind: ReplicaSet
+    name: rs-1
 status:
   podIp: 10.233.66.239
   phase: Running`,
@@ -182,6 +194,9 @@ kind: Pod
 metadata:
   name: name1-f748fb6b4-6vcmw
   namespace: ns
+  ownerReferences:
+  - kind: ReplicaSet
+    name: rs-1
 status:
   podIp: 10.233.88.244
   phase: Running`,
@@ -233,6 +248,9 @@ kind: Pod
 metadata:
   name: world-575bf846b4-tp4hw
   namespace: ns
+  ownerReferences:
+  - kind: ReplicaSet
+    name: rs-1
 status:
   podIp: 10.1.30.135
   phase: Running`,
@@ -288,6 +306,9 @@ kind: Pod
 metadata:
   name: name1-3
   namespace: ns
+  ownerReferences:
+  - kind: ReplicaSet
+    name: rs-1
 status:
   phase: Running
   podIP: 172.17.0.25`,
@@ -354,7 +375,7 @@ spec:
 				t.Fatalf("NewFakeAPI returned an error: %s", err)
 			}
 
-			watcher := NewEndpointsWatcher(k8sAPI, logging.WithFields(logging.Fields{"test": t.Name}))
+			watcher := NewEndpointsWatcher(k8sAPI, logging.WithField("test", t.Name))
 
 			k8sAPI.Sync()
 

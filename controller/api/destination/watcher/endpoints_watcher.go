@@ -293,24 +293,29 @@ func (sp *servicePublisher) unsubscribe(srcPort Port, listener EndpointUpdateLis
 func (sp *servicePublisher) newPortPublisher(srcPort Port) *portPublisher {
 	targetPort := intstr.FromInt(int(srcPort))
 	svc, err := sp.k8sAPI.Svc().Lister().Services(sp.id.Namespace).Get(sp.id.Name)
-	if err != nil {
+	exists := false
+	if err == nil && svc.Spec.Type != corev1.ServiceTypeExternalName {
+		// XXX: The proxy will use DNS to discover the service if it is told
+		// the service doesn't exist. An external service is represented in DNS
+		// as a CNAME, which the proxy will correctly resolve. Thus, there's no
+		// benefit (yet) to distinguishing between "the service exists but it
+		// is an ExternalName service so use DNS anyway" and "the service does
+		// not exist."
 		targetPort = getTargetPort(svc, srcPort)
+		exists = true
 	}
 
 	port := &portPublisher{
 		listeners:  []EndpointUpdateListener{},
 		targetPort: targetPort,
+		exists:     exists,
 		k8sAPI:     sp.k8sAPI,
-		log: sp.log.WithFields(logging.Fields{
-			"port": srcPort,
-		}),
+		log:        sp.log.WithField("port", srcPort),
 	}
 
 	endpoints, err := sp.k8sAPI.Endpoint().Lister().Endpoints(sp.id.Namespace).Get(sp.id.Name)
 	if err == nil {
 		port.updateEndpoints(endpoints)
-	} else {
-		port.noEndpoints(false)
 	}
 
 	return port
@@ -355,6 +360,7 @@ func (pp *portPublisher) endpointsToAddresses(endpoints *corev1.Endpoints) PodSe
 				pod, err := pp.k8sAPI.Pod().Lister().Pods(id.Namespace).Get(id.Name)
 				if err != nil {
 					pp.log.Errorf("Unable to fetch pod %v: %s", id, err)
+					continue
 				}
 				ownerKind, ownerName := pp.k8sAPI.GetOwnerKindAndName(pod)
 				pods[id] = Address{
